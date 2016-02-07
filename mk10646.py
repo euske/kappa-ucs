@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 ##
 ##  mk10646.py - compose multiple .bdf fonts to one ISO-10646 font.
 ##  (Python2 only)
@@ -22,6 +22,24 @@ def jisx0201toucs(x):
 # convert JISX0208 code to UCS (maybe not entirely correct)
 def jisx0208toucs(x):
     return ord(('\x1b$B'+chr(x//256)+chr(x%256)+'\x1b(B').decode('iso-2022-jp'))
+
+# wide chars
+CHARWIDTH = {}
+def load_charwidth(path):
+    fp = open(path, 'r')
+    for line in fp:
+        (line,_,_) = line.partition('#')
+        line = line.strip()
+        if not line: continue
+        (rng,_,wid) = line.partition(';')
+        (b,_,e) = rng.partition('..')
+        if not e:
+            e = b
+        b = int(b, 16)
+        e = int(e, 16)
+        for c in xrange(b, e+1):
+            CHARWIDTH[c] = wid
+    fp.close()
 
 
 ##  BDFParserBase
@@ -52,6 +70,7 @@ class BDFGlyphParser(BDFParserBase):
         self.swidth = None
         self.dwidth = None
         self.bbx = None
+        self.wide = False
         self.bits = []
         self._bitmap = False
         return
@@ -85,7 +104,8 @@ class BDFGlyphParser(BDFParserBase):
         return
     
     def do_bbx(self, args):
-        self.bbx = args
+        self.bbx = args.split(' ')
+        self.wide = (self.bbx[0] == self.bbx[1])
         return
     
     def finish(self):
@@ -101,7 +121,7 @@ class BDFGlyphParser(BDFParserBase):
         fp.write('ENCODING %r\n' % encoding)
         fp.write('SWIDTH %s\n' % self.swidth)
         fp.write('DWIDTH %s\n' % self.dwidth)
-        fp.write('BBX %s\n' % self.bbx)
+        fp.write('BBX %s\n' % ' '.join(self.bbx))
         fp.write('BITMAP\n')
         for bit in self.bits:
             fp.write(bit+'\n')
@@ -161,7 +181,7 @@ class BDFFileParser(BDFParserBase):
     
     def do_fontboundingbox(self, args):
         assert self.bbx is None
-        self.bbx = args
+        self.bbx = args.split(' ')
         return
     
     def do_startproperties(self, args):
@@ -274,7 +294,7 @@ class BDFFileParser(BDFParserBase):
                  self.get_prop('CHARSET_ENCODING')))
         fp.write('FONT %s\n' % name)
         fp.write('SIZE %s\n' % self.size)
-        fp.write('FONTBOUNDINGBOX %s\n' % self.bbx)
+        fp.write('FONTBOUNDINGBOX %s\n' % ' '.join(self.bbx))
         fp.write('STARTPROPERTIES %r\n' % len(self.props))
         for (k,v) in self.props:
             if isinstance(v, str):
@@ -294,6 +314,8 @@ def main(argv):
     out = sys.stdout
     glyphs = {}
     parser = None
+    awide = False
+    load_charwidth('EastAsianWidth.txt')
     for path in args:
         print >>sys.stderr, 'reading: %r' % path
         parser = BDFFileParser(path)
@@ -316,7 +338,10 @@ def main(argv):
         # convert each charcode to UCS/Unicode.
         for glyph in parser.glyphs:
             e = f(glyph.encoding)
-            glyphs[e] = glyph
+            if e in glyphs:
+                glyphs[e].append(glyph)
+            else:
+                glyphs[e] = [glyph]
     # use the properties from the last file.
     assert parser is not None
     parser.set_prop('CHARSET_REGISTRY', 'ISO10646')
@@ -324,8 +349,21 @@ def main(argv):
     parser.dump_header(out)
     out.write('CHARS %r\n' % len(glyphs))
     for e in sorted(glyphs):
-        glyph = glyphs[e]
-        glyph.dump(out, encoding=e)
+        wid = CHARWIDTH.get(e)
+        for glyph in glyphs[e]:
+            ok = True
+            if (wid == 'F' or wid == 'W'):
+                ok = glyph.wide
+            elif (wid == 'H' or wid == 'Na'):
+                ok = not glyph.wide
+            elif wid == 'A':
+                ok = (glyph.wide == awide)
+            if ok:
+                glyph.dump(out, encoding=e)
+                break
+        else:
+            print >>sys.stderr, 'warning: invalid width: U+%04x (%s:%r)' % (e, wid, glyph.wide)
+            glyph.dump(out, encoding=e)
     parser.dump_footer(out)
     return 0
 
