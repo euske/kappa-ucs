@@ -9,7 +9,7 @@
 ##  Usage: $ python mk10646.py input1.bdf input2.bdf ... > output.bdf
 ##
 ##  Note: when there are multiple glyphs for the same character,
-##        the last glyph is used.
+##        the first glyph is used.
 ##
 
 import sys
