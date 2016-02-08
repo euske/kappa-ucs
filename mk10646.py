@@ -41,6 +41,48 @@ def load_charwidth(path):
             CHARWIDTH[c] = wid
     fp.close()
 
+# shrink_bits
+def shrink_bits(bits):
+    a = ''
+    x0 = None
+    for b in bits:
+        b = ord(b)
+        x1 = 0
+        if b & 0xc0:
+            x1 |= 0x8
+        if b & 0x30:
+            x1 |= 0x4
+        if b & 0x0c:
+            x1 |= 0x2
+        if b & 0x03:
+            x1 |= 0x1
+        if x0 is not None:
+            a += chr(x0 << 4 | x1)
+            x0 = None
+        else:
+            x0 = x1
+    if x0 is not None:
+        a += chr(x0 << 4)
+    return a
+
+# expand_bits
+def expand_bits(bits):
+    a = ''
+    for b in bits:
+        b = ord(b)
+        for i in (b >> 4, b & 0xf):
+            x = 0
+            if b & 8:
+                x |= 0xc0
+            if b & 4:
+                x |= 0x30
+            if b & 2:
+                x |= 0x0c
+            if b & 1:
+                x |= 0x03
+            a += chr(x)
+    return a
+
 
 ##  BDFParserBase
 ##
@@ -72,6 +114,7 @@ class BDFGlyphParser(BDFParserBase):
         self.bbx = None
         self.wide = False
         self.bits = []
+        self.changed = False
         self._bitmap = False
         return
 
@@ -96,20 +139,37 @@ class BDFGlyphParser(BDFParserBase):
         return
     
     def do_swidth(self, args):
-        self.swidth = args
+        self.swidth = map(int, args.split(' '))
         return
     
     def do_dwidth(self, args):
-        self.dwidth = args
+        self.dwidth = map(int, args.split(' '))
         return
     
     def do_bbx(self, args):
-        self.bbx = args.split(' ')
+        self.bbx = map(int, args.split(' '))
         self.wide = (self.bbx[0] == self.bbx[1])
         return
     
     def finish(self):
         self._bitmap = False
+        return
+
+    def adjust(self, wide=False):
+        if self.wide and not wide:
+            self.swidth[0] = self.swidth[0]//2
+            self.dwidth[0] = self.dwidth[0]//2
+            self.bbx[0] = self.bbx[0]//2
+            self.bits = [ shrink_bits(bit.decode('hex')).encode('hex')
+                          for bit in self.bits ]
+        elif not self.wide and wide:
+            self.swidth[0] = self.swidth[0]*2
+            self.dwidth[0] = self.dwidth[0]*2
+            self.bbx[0] = self.bbx[0]*2
+            self.bits = [ expand_bits(bit.decode('hex')).encode('hex')
+                          for bit in self.bits ]
+        self.changed = True
+        self.wide = wide
         return
 
     def dump(self, fp, encoding):
@@ -119,9 +179,9 @@ class BDFGlyphParser(BDFParserBase):
         assert self.bbx is not None
         fp.write('STARTCHAR %s\n' % self.name)
         fp.write('ENCODING %r\n' % encoding)
-        fp.write('SWIDTH %s\n' % self.swidth)
-        fp.write('DWIDTH %s\n' % self.dwidth)
-        fp.write('BBX %s\n' % ' '.join(self.bbx))
+        fp.write('SWIDTH %s\n' % ' '.join(map(str, self.swidth)))
+        fp.write('DWIDTH %s\n' % ' '.join(map(str, self.dwidth)))
+        fp.write('BBX %s\n' % ' '.join(map(str, self.bbx)))
         fp.write('BITMAP\n')
         for bit in self.bits:
             fp.write(bit+'\n')
@@ -314,7 +374,7 @@ def main(argv):
     out = sys.stdout
     glyphs = {}
     parser = None
-    awide = False
+    ambwide = False
     load_charwidth('EastAsianWidth.txt')
     for path in args:
         print >>sys.stderr, 'reading: %r' % path
@@ -357,12 +417,13 @@ def main(argv):
             elif (wid == 'H' or wid == 'Na'):
                 ok = not glyph.wide
             elif wid == 'A':
-                ok = (glyph.wide == awide)
+                ok = (glyph.wide == ambwide)
             if ok:
                 glyph.dump(out, encoding=e)
                 break
         else:
             print >>sys.stderr, 'warning: invalid width: U+%04x (%s:%r)' % (e, wid, glyph.wide)
+            glyph.adjust(wide=(wid in ('F','W')))
             glyph.dump(out, encoding=e)
     parser.dump_footer(out)
     return 0
